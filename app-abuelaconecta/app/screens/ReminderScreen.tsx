@@ -1,153 +1,149 @@
+// ReminderMqttScreen.tsx
+import { useEffect, useState } from "react";
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from "react-native";
+import { client, enviarMensaje, isConnected } from "@/hooks/mqttClient";
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import * as Notifications from 'expo-notifications';
-import { useRouter } from 'expo-router';
-import React, { useState } from "react";
-import { Alert, StyleSheet, Text, TextInput, TouchableOpacity, View } from "react-native";
+import { useRouter } from "expo-router";
 
-// Define la estructura para el objeto que guardaremos
 interface Reminder {
-    id: string; // ID de la notificación para poder cancelarla
-    text: string;
-    time: string; // "HH:MM" para mostrar
-    hour: number;
-    minute: number;
+  id: string;
+  text: string;
+  time: string;
+  hour: number;
+  minute: number;
 }
 
 const REMINDERS_KEY = '@my_reminders';
 
-export default function ReminderScreen() {
+export default function ReminderMqttScreen() {
   const router = useRouter();
+  const [message, setMessage] = useState("");
+  const [hour, setHour] = useState("17");
+  const [minute, setMinute] = useState("00");
+  const [connectionStatus, setConnectionStatus] = useState(isConnected());
+  const [scheduled, setScheduled] = useState(false);
 
-  const [reminderText, setReminderText] = useState<string>("");
-  const [hours, setHours] = useState<string>("17");
-  const [minutes, setMinutes] = useState<string>("00");
-  const [showSuccess, setShowSuccess] = useState<boolean>(false);
+  useEffect(() => {
+    const onConnect = () => setConnectionStatus(true);
+    const onClose = () => setConnectionStatus(false);
+    const onError = () => setConnectionStatus(false);
 
-  /**
-   * Programa una notificación diaria recurrente y guarda el registro en AsyncStorage.
-   */
-  const handleSetReminder = async () => {
-    const reminder = reminderText.trim();
-    const parsedHours = parseInt(hours, 10);
-    const parsedMinutes = parseInt(minutes, 10);
+    client.on("connect", onConnect);
+    client.on("close", onClose);
+    client.on("error", onError);
 
-    // 1. VALIDACIÓN
-    if (!reminder) {
-        Alert.alert("Error", "Por favor, escribe el mensaje del recordatorio.");
-        return;
+    return () => {
+      client.removeListener("connect", onConnect);
+      client.removeListener("close", onClose);
+      client.removeListener("error", onError);
+    };
+  }, []);
+
+  const handleSchedule = async () => {
+    if (!message.trim()) {
+      Alert.alert("Error", "Escribí un mensaje para enviar.");
+      return;
     }
-    if (isNaN(parsedHours) || parsedHours < 0 || parsedHours > 23 || 
-        isNaN(parsedMinutes) || parsedMinutes < 0 || parsedMinutes > 59) {
-        Alert.alert("Error", "La hora debe estar entre 00-23 y los minutos entre 00-59.");
-        return;
+
+    const h = parseInt(hour, 10);
+    const m = parseInt(minute, 10);
+    if (isNaN(h) || h < 0 || h > 23 || isNaN(m) || m < 0 || m > 59) {
+      Alert.alert("Error", "Ingresá una hora válida (00–23) y minutos (00–59).");
+      return;
     }
+
+    // Calcular delay
+    const now = new Date();
+    const sendTime = new Date();
+    sendTime.setHours(h, m, 0, 0);
+    if (sendTime <= now) sendTime.setDate(sendTime.getDate() + 1);
+    const delay = sendTime.getTime() - now.getTime();
+
+    // Crear ID único
+    const id = `${Date.now()}`;
+
+    const newReminder: Reminder = {
+      id,
+      text: message,
+      time: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`,
+      hour: h,
+      minute: m,
+    };
 
     try {
-        // 2. SOLICITAR PERMISOS
-        const { status } = await Notifications.requestPermissionsAsync();
-        if (status !== 'granted') {
-             Alert.alert("Permiso Denegado", "Necesitas conceder permiso de notificaciones para activar recordatorios.");
-             return;
+      // Guardar recordatorio
+      const existingJson = await AsyncStorage.getItem(REMINDERS_KEY);
+      const existing: Reminder[] = existingJson ? JSON.parse(existingJson) : [];
+      const updated = [...existing, newReminder];
+      await AsyncStorage.setItem(REMINDERS_KEY, JSON.stringify(updated));
+
+      // Programar envío seguro: revisa AsyncStorage antes de enviar
+      setTimeout(async () => {
+        const storedJson = await AsyncStorage.getItem(REMINDERS_KEY);
+        const stored: Reminder[] = storedJson ? JSON.parse(storedJson) : [];
+        const stillExists = stored.find(r => r.id === id);
+        if (stillExists && isConnected()) {
+          enviarMensaje(message);
         }
+      }, delay);
 
-        // 3. Programar la notificación y obtener su ID
-        const notificationId = await Notifications.scheduleNotificationAsync({
-            content: {
-                title: '⏰ Recordatorio Diario',
-                body: reminder,
-                sound: true,
-                channelId: 'mqtt-alerts',
-            },
-            trigger: {
-              hour: parsedHours,
-              minute: parsedMinutes,
-              repeats: true, 
-            },
-        });
-        
-        // 4. Crear objeto de almacenamiento
-        const newReminder: Reminder = { 
-            id: notificationId, 
-            text: reminder,
-            time: `${parsedHours.toString().padStart(2, '0')}:${parsedMinutes.toString().padStart(2, '0')}`,
-            hour: parsedHours,
-            minute: parsedMinutes,
-        };
+      setMessage("");
+      Alert.alert("✅ Programado", `Mensaje a enviarse a las ${newReminder.time}`);
+      router.push('/screens/ViewRemindersScreen');
 
-        // 5. Guardar en AsyncStorage
-        const existingRemindersJson = await AsyncStorage.getItem(REMINDERS_KEY);
-        const existingReminders: Reminder[] = existingRemindersJson ? JSON.parse(existingRemindersJson) : [];
-        
-        const updatedReminders = [...existingReminders, newReminder];
-        await AsyncStorage.setItem(REMINDERS_KEY, JSON.stringify(updatedReminders));
-
-        // 6. ÉXITO
-        setReminderText("");
-        setShowSuccess(true);
-        
-        setTimeout(() => {
-          setShowSuccess(false);
-          router.push('/screens/MenuScreen');
-        }, 2000);
-
-    } catch (error) {
-        console.error("Error al programar/guardar recordatorio:", error);
-        Alert.alert("Error", "No se pudo activar el recordatorio. Intente de nuevo.");
-    }
-  };
-
-  const handleBack = () => {
-    if (router.canGoBack()) {
-      router.back();
-    } else {
-      router.push('/screens/MenuScreen'); 
+    } catch (e) {
+      console.error(e);
+      Alert.alert("Error", "No se pudo programar el mensaje.");
     }
   };
 
   return (
     <View style={styles.container}>
-      <TouchableOpacity style={styles.backButton} onPress={handleBack}>
+      <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
         <Text style={styles.backButtonText}>← atrás</Text>
       </TouchableOpacity>
 
-      <Text style={styles.title}>Recordatorio</Text>
+      <Text style={styles.title}>Nuevo Mensaje MQTT</Text>
 
-      <View style={styles.inputContainer}>
+      <TextInput
+        style={styles.input}
+        placeholder="Mensaje a enviar"
+        placeholderTextColor="#999"
+        value={message}
+        onChangeText={setMessage}
+      />
+
+      <View style={styles.timeRow}>
         <TextInput
-          style={styles.textInput}
-          value={reminderText}
-          onChangeText={setReminderText}
-          placeholder="Escribe el mensaje del recordatorio"
-          placeholderTextColor="#999"
+          style={styles.timeInput}
+          value={hour}
+          onChangeText={(t) => setHour(t.replace(/[^0-9]/g, "").substring(0, 2))}
+          keyboardType="numeric"
+          maxLength={2}
+        />
+        <Text style={styles.timeColon}>:</Text>
+        <TextInput
+          style={styles.timeInput}
+          value={minute}
+          onChangeText={(t) => setMinute(t.replace(/[^0-9]/g, "").substring(0, 2))}
+          keyboardType="numeric"
+          maxLength={2}
         />
       </View>
 
-      <View style={styles.timePickerContainer}>
-        <Text style={styles.timePickerTitle}>Hora del recordatorio (Diario)</Text>
-        <View style={styles.timePicker}>
-          <TextInput
-            style={styles.timeInput}
-            value={hours}
-            onChangeText={(text: string) => setHours(text.replace(/[^0-9]/g, '').substring(0, 2))}
-            keyboardType="numeric"
-            maxLength={2}
-          />
-          <Text style={styles.timeSeparator}>:</Text>
-          <TextInput
-            style={styles.timeInput}
-            value={minutes}
-            onChangeText={(text: string) => setMinutes(text.replace(/[^0-9]/g, '').substring(0, 2))}
-            keyboardType="numeric"
-            maxLength={2}
-          />
-        </View>
-      </View>
-
-      <TouchableOpacity style={styles.sendButton} onPress={handleSetReminder}>
-        <Text style={styles.sendButtonText}>Activar Recordatorio Diario</Text>
+      <TouchableOpacity
+        style={[styles.sendButton, scheduled && styles.disabledButton]}
+        onPress={handleSchedule}
+        disabled={scheduled}
+      >
+        <Text style={styles.sendButtonText}>
+          {scheduled ? "Programado..." : "Programar envío"}
+        </Text>
       </TouchableOpacity>
 
-      {showSuccess && <Text style={styles.successText}>Se activó el recordatorio</Text>}
+      <Text style={styles.status}>
+        Estado MQTT: {connectionStatus ? "🟢 Conectado" : "🔴 Desconectado"}
+      </Text>
     </View>
   );
 }
@@ -156,15 +152,13 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#1033a3", padding: 24 },
   backButton: { backgroundColor: "#000", paddingHorizontal: 16, paddingVertical: 8, borderRadius: 4, alignSelf: "flex-start", marginBottom: 24 },
   backButtonText: { color: "#fff", fontSize: 14 },
-  title: { fontSize: 28, fontWeight: "bold", color: "#fff", textAlign: "center", marginBottom: 24 },
-  inputContainer: { backgroundColor: "#fff", borderRadius: 8, padding: 24, marginBottom: 24 },
-  textInput: { fontSize: 18, backgroundColor: "#f5f5f5", padding: 16, borderRadius: 4, minHeight: 80, textAlignVertical: 'top' },
-  timePickerTitle: { fontSize: 16, fontWeight: '600', color: '#333', marginBottom: 16 },
-  timePickerContainer: { backgroundColor: "#fff", borderRadius: 8, padding: 24, marginBottom: 24, alignItems: "center" },
-  timePicker: { flexDirection: "row", alignItems: "center", marginBottom: 0 },
-  timeInput: { width: 72, height: 56, borderWidth: 2, borderColor: "#1033a3", borderRadius: 8, textAlign: "center", fontSize: 24, backgroundColor: "#fff", fontWeight: 'bold' },
-  timeSeparator: { fontSize: 32, marginHorizontal: 8, fontWeight: 'bold', color: '#1033a3' },
-  sendButton: { backgroundColor: "#000", padding: 16, borderRadius: 8, alignItems: "center", marginTop: 16, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 5, elevation: 6 },
-  sendButtonText: { color: "#fff", fontSize: 20, fontWeight: "600" },
-  successText: { color: "#0f0", fontSize: 20, fontWeight: "bold", textAlign: "center", marginTop: 16 },
+  title: { fontSize: 24, color: "#fff", textAlign: "center", marginBottom: 24 },
+  input: { backgroundColor: "#fff", padding: 16, borderRadius: 8, fontSize: 18 },
+  timeRow: { flexDirection: "row", justifyContent: "center", alignItems: "center", marginTop: 20 },
+  timeInput: { backgroundColor: "#fff", borderRadius: 8, padding: 10, width: 70, textAlign: "center", fontSize: 22, fontWeight: "bold" },
+  timeColon: { color: "#fff", fontSize: 28, marginHorizontal: 8 },
+  sendButton: { backgroundColor: "#000", padding: 16, borderRadius: 8, marginTop: 24, alignItems: "center" },
+  disabledButton: { backgroundColor: "#555" },
+  sendButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
+  status: { color: "#fff", textAlign: "center", marginTop: 24 },
 });
