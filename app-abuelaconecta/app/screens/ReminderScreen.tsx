@@ -6,7 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from "expo-router";
 
 interface Reminder {
-  id: string;
+  id: string;   
   text: string;
   time: string;
   hour: number;
