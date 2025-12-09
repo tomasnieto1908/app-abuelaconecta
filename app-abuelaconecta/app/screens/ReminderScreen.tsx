@@ -1,19 +1,16 @@
-// ReminderMqttScreen.tsx
 import { useEffect, useState } from "react";
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from "react-native";
-import { client, enviarMensaje, isConnected } from "@/hooks/mqttClient";
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { client, isConnected } from "@/hooks/mqttClient";
 import { useRouter } from "expo-router";
 
 interface Reminder {
-  id: string;   
+  id: string;
   text: string;
-  time: string;
   hour: number;
   minute: number;
 }
 
-const REMINDERS_KEY = '@my_reminders';
+const SERVER_URL = "http://10.56.2.27:5000";  // ← TU IP REAL
 
 export default function ReminderMqttScreen() {
   const router = useRouter();
@@ -21,7 +18,6 @@ export default function ReminderMqttScreen() {
   const [hour, setHour] = useState("17");
   const [minute, setMinute] = useState("00");
   const [connectionStatus, setConnectionStatus] = useState(isConnected());
-  const [scheduled, setScheduled] = useState(false);
 
   useEffect(() => {
     const onConnect = () => setConnectionStatus(true);
@@ -47,53 +43,38 @@ export default function ReminderMqttScreen() {
 
     const h = parseInt(hour, 10);
     const m = parseInt(minute, 10);
+
     if (isNaN(h) || h < 0 || h > 23 || isNaN(m) || m < 0 || m > 59) {
-      Alert.alert("Error", "Ingresá una hora válida (00–23) y minutos (00–59).");
+      Alert.alert("Error", "Hora inválida.");
       return;
     }
 
-    // Calcular delay
-    const now = new Date();
-    const sendTime = new Date();
-    sendTime.setHours(h, m, 0, 0);
-    if (sendTime <= now) sendTime.setDate(sendTime.getDate() + 1);
-    const delay = sendTime.getTime() - now.getTime();
-
-    // Crear ID único
     const id = `${Date.now()}`;
 
     const newReminder: Reminder = {
       id,
       text: message,
-      time: `${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`,
       hour: h,
       minute: m,
     };
 
     try {
-      // Guardar recordatorio
-      const existingJson = await AsyncStorage.getItem(REMINDERS_KEY);
-      const existing: Reminder[] = existingJson ? JSON.parse(existingJson) : [];
-      const updated = [...existing, newReminder];
-      await AsyncStorage.setItem(REMINDERS_KEY, JSON.stringify(updated));
+      const res = await fetch(`${SERVER_URL}/save-reminder`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(newReminder),
+      });
 
-      // Programar envío seguro: revisa AsyncStorage antes de enviar
-      setTimeout(async () => {
-        const storedJson = await AsyncStorage.getItem(REMINDERS_KEY);
-        const stored: Reminder[] = storedJson ? JSON.parse(storedJson) : [];
-        const stillExists = stored.find(r => r.id === id);
-        if (stillExists && isConnected()) {
-          enviarMensaje(message);
-        }
-      }, delay);
+      if (!res.ok) {
+        throw new Error("Error guardando en el servidor");
+      }
 
-      setMessage("");
-      Alert.alert("✅ Programado", `Mensaje a enviarse a las ${newReminder.time}`);
-      router.push('/screens/ViewRemindersScreen');
+      Alert.alert("✅ Guardado", `Recordatorio diario a las ${hour}:${minute}`);
+      router.push("/screens/ViewRemindersScreen");
 
     } catch (e) {
       console.error(e);
-      Alert.alert("Error", "No se pudo programar el mensaje.");
+      Alert.alert("Error", "El servidor no respondió. Revisá si está encendido.");
     }
   };
 
@@ -103,7 +84,7 @@ export default function ReminderMqttScreen() {
         <Text style={styles.backButtonText}>← atrás</Text>
       </TouchableOpacity>
 
-      <Text style={styles.title}>Nuevo Mensaje MQTT</Text>
+      <Text style={styles.title}>Nuevo Recordatorio Diario</Text>
 
       <TextInput
         style={styles.input}
@@ -131,14 +112,8 @@ export default function ReminderMqttScreen() {
         />
       </View>
 
-      <TouchableOpacity
-        style={[styles.sendButton, scheduled && styles.disabledButton]}
-        onPress={handleSchedule}
-        disabled={scheduled}
-      >
-        <Text style={styles.sendButtonText}>
-          {scheduled ? "Programado..." : "Programar envío"}
-        </Text>
+      <TouchableOpacity style={styles.sendButton} onPress={handleSchedule}>
+        <Text style={styles.sendButtonText}>Guardar recordatorio</Text>
       </TouchableOpacity>
 
       <Text style={styles.status}>
@@ -158,7 +133,6 @@ const styles = StyleSheet.create({
   timeInput: { backgroundColor: "#fff", borderRadius: 8, padding: 10, width: 70, textAlign: "center", fontSize: 22, fontWeight: "bold" },
   timeColon: { color: "#fff", fontSize: 28, marginHorizontal: 8 },
   sendButton: { backgroundColor: "#000", padding: 16, borderRadius: 8, marginTop: 24, alignItems: "center" },
-  disabledButton: { backgroundColor: "#555" },
   sendButtonText: { color: "#fff", fontSize: 18, fontWeight: "bold" },
   status: { color: "#fff", textAlign: "center", marginTop: 24 },
 });
